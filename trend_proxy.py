@@ -25,7 +25,7 @@ class TrendProxy(bt.Strategy):
         self.chandelier = dict()
         self.entry = entry
         self.proxies = {
-            'ULPIX': 'SPY',
+            'ULPIX': ['SPY', 2.0],
         }
 
         self._addsizer(bt.sizers.PercentSizer, percents=100)
@@ -78,7 +78,8 @@ class TrendProxy(bt.Strategy):
                 continue
 
             bars = self.getdatabyname(sym)
-            proxy_sym = self.proxies.get(sym)
+            proxy_data = self.proxies.get(sym)
+            proxy_sym = proxy_data[0]
             proxy_bars = self.getdatabyname(proxy_sym)
 
             chandelier = self.highest[sym][0] - \
@@ -90,11 +91,12 @@ class TrendProxy(bt.Strategy):
             aroon_proxy = self.aroon[proxy_sym][0] > 0.0 and trend_proxy
             pos = self.broker.getposition(bars)
 
-            print('%s: cash %f\n'
+            print('%s: cash %f signal %s\n'
                   '\t%s { close %f ppo %f chandelier %f atr %f }\n'
                   '\t%s { close %f ppo %f chandelier %f atr %f }' %
                   (bars.datetime.datetime().isoformat(),
                    self.broker.getcash(),
+                   ("Long" if trend_proxy else "Short"),
                    proxy_sym,
                    proxy_bars.close[0],
                    self.ppo[proxy_sym][0],
@@ -113,7 +115,7 @@ class TrendProxy(bt.Strategy):
                         proxy_bars.close[0]
                     # Normalize risk to current symbol, with leverage factor
                     self.stopLoss[sym] = bars.close[0] - \
-                        (bars.close[0] * risk * 2.0)
+                        (bars.close[0] * risk * proxy_data[1])
                     # Track trailing stop of proxy symbol
                     self.chandelier[sym] = chandelier_proxy
 

@@ -9,7 +9,7 @@ class Trend(bt.Strategy):
         ('long', 50),
         ('aroon', 5),
         ('atr', 22),
-        ('atr_mult', 3.0),
+        ('atr_mult', 4.5),
         ('risk', 0.02),
     )
 
@@ -94,9 +94,8 @@ class Trend(bt.Strategy):
                 if aroon and chandelier < bars.close[0]:
                     # Risk per share
                     risk = bars.close[0] - chandelier
-                    # Set stop loss
+                    # Set stops
                     self.stopLoss[sym] = chandelier
-                    # Set trailing stop
                     self.chandelier[sym] = chandelier
 
                     qty = min((self.risk * self.broker.getcash()) / risk,
