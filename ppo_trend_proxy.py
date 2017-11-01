@@ -4,13 +4,11 @@ import backtrader as bt
 
 class PPOTrendProxy(bt.Strategy):
     params = (
-        ('short', 40),
-        ('long', 80),
+        ('short', 50),
+        ('long', 100),
         ('short1', 20),
         ('long1', 50),
         ('aroon', 20),
-        ('atr', 22),
-        ('atr_mult', 3.0),
         ('risk', 0.02),
     )
 
@@ -21,22 +19,17 @@ class PPOTrendProxy(bt.Strategy):
         self.lowest_ppo = dict()
         self.psar = dict()
         self.aroon = dict()
-        self.atr = dict()
-        self.atr_multiplier = self.params.atr_mult
         self.risk = self.params.risk
         self.stop_loss = dict()
         self.chandelier = dict()
         self.proxies = {
-            'ULPIX': ['SPY', 2.0],
+            'SPY': ['SPY', 1.0],
         }
 
         self._addsizer(bt.sizers.PercentSizer, percents=100)
         for sym in self.getdatanames():
             self.stop_loss[sym] = None
-            self.chandelier[sym] = None
 
-            self.atr[sym] = bt.indicators.AverageTrueRange(
-                self.getdatabyname(sym), period=self.params.atr)
             self.aroon[sym] = bt.indicators.AroonOsc(
                 self.getdatabyname(sym), period=self.params.aroon)
             self.long_ppo[sym] = bt.indicators.PPO(
@@ -47,8 +40,6 @@ class PPOTrendProxy(bt.Strategy):
                 period2=self.params.long1, period_signal=1)
             self.lowest_ppo[sym] = bt.indicators.Lowest(
                 self.short_ppo[sym], period=5)
-            self.highest[sym] = bt.indicators.Highest(
-                self.getdatabyname(sym), period=self.params.atr)
             self.psar[sym] = bt.indicators.PSAR(
                 self.getdatabyname(sym), af=0.001)
 
@@ -82,22 +73,20 @@ class PPOTrendProxy(bt.Strategy):
             pos = self.broker.getposition(bars)
 
             print('%s: cash %f signal %s\n'
-                  '\t%s { close %f ppo %f sar %f atr %f lowest ppo %f }\n'
-                  '\t%s { close %f ppo %f sar %f atr %f lowest ppo %f }' %
+                  '\t%s { close %f ppo %f sar %f lowest ppo %f }\n'
+                  '\t%s { close %f ppo %f sar %f lowest ppo %f }' %
                   (bars.datetime.datetime().isoformat(),
                    self.broker.getcash(),
                    ("Long" if long_trend else "Short"),
                    proxy_sym,
                    proxy_bars.close[0],
-                   self.long_ppo[proxy_sym][0],
+                   self.short_ppo[proxy_sym][0],
                    self.psar[proxy_sym][0],
-                   self.atr[proxy_sym][0],
                    self.lowest_ppo[proxy_sym][0],
                    sym,
                    bars.close[0],
-                   self.long_ppo[sym][0],
+                   self.short_ppo[sym][0],
                    self.psar[sym][0],
-                   self.atr[sym][0],
                    self.lowest_ppo[sym][0]))
 
             if pos.size == 0:
@@ -111,7 +100,8 @@ class PPOTrendProxy(bt.Strategy):
 
                     qty = min((self.risk * self.get_portfolio_value()) /
                               (bars.close[0] - self.stop_loss[sym]),
-                              (self.get_portfolio_value() / len(self.proxies)) / bars.close[0])
+                              (self.get_portfolio_value() / len(self.proxies)) /
+                              bars.close[0])
                     self.buy(data=sym, size=qty, exectype=bt.Order.Close)
 
                     print('%s: %s BUY qty %d stop %f' %
@@ -137,3 +127,4 @@ class PPOTrendProxy(bt.Strategy):
                     print('%s: %s SELL reason %s' %
                           (self.datetime.datetime().isoformat(), sym,
                            reason))
+
