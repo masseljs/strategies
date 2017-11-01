@@ -23,7 +23,7 @@ class PPOTrendProxy(bt.Strategy):
         self.stop_loss = dict()
         self.chandelier = dict()
         self.proxies = {
-            'SPY': ['SPY', 1.0],
+            'ULPIX': ['SPY', 1.0],
         }
 
         self._addsizer(bt.sizers.PercentSizer, percents=100)
