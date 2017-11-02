@@ -1,13 +1,12 @@
-from datetime import datetime
 import backtrader as bt
 
 
 class LevTrend(bt.Strategy):
     params = (
-        ('short', 50),
-        ('long', 100),
-        ('short1', 20),
-        ('long1', 50),
+        ('short', 65),
+        ('long', 170),
+        ('short1', 13),
+        ('long1', 34),
         ('aroon', 20),
         ('risk', 0.02),
     )
@@ -25,8 +24,8 @@ class LevTrend(bt.Strategy):
         self.long_only = long_only
         self.proxies = {
             'SPY': {
-                'long': ['ULPIX', 1.0],
-                'short': ['URPIX', 1.0],
+                'long': ['ULPIX'],
+                'short': ['URPIX'],
             }
         }
 
@@ -65,8 +64,39 @@ class LevTrend(bt.Strategy):
     def get_proxy_sym(self, proxy):
         return proxy[0]
 
-    def get_proxy_leverage(self, proxy):
-        return proxy[1]
+    def enter_position(self, long, proxy, sym):
+        # Percent risk for proxy symbol
+        risk = (proxy[1].close[0] - self.psar[proxy[0]][0]) / proxy[1].close[0] \
+            if long \
+            else (self.psar[proxy[0]][0] - proxy[1].close[0]) / proxy[1].close[0]
+
+        # Normalize risk to symbol being traded
+        self.stop_loss[sym[0]] = sym[1].close[0] - \
+            (sym[1].close[0] * risk)
+
+        qty = min((self.risk * self.get_portfolio_value()) /
+                  (sym[1].close[0] - self.stop_loss[sym[0]]),
+                  (self.get_portfolio_value() / len(self.proxies)) /
+                  sym[1].close[0])
+        self.buy(data=sym[0], size=qty, exectype=bt.Order.Close)
+
+        print('%s: %s BUY qty %d stop %f' %
+              (self.datetime.datetime().isoformat(), sym[0], qty,
+               self.stop_loss[sym[0]]))
+
+    def exit_position(self, long, proxy, sym):
+        psar_exit = (long and proxy[1].close[0] < self.psar[proxy[0]][0]) or \
+            (not long and proxy[1].close[0] > self.psar[proxy[0]][0])
+        if sym[1].close[0] < self.stop_loss[sym[0]] or \
+           psar_exit:
+            reason = 'stop loss' if sym[1].close[0] < self.stop_loss[sym[0]] \
+                else 'trailing stop'
+            self.sell(data=sym[0], exectype=bt.Order.Close)
+            self.stop_loss[sym[0]] = None
+
+            print('%s: %s SELL reason %s' %
+                  (self.datetime.datetime().isoformat(), sym[0],
+                   reason))
 
     def next(self):
         for sym in self.getdatanames():
@@ -99,78 +129,34 @@ class LevTrend(bt.Strategy):
                    str(long_pos.size != 0),
                    str(short_pos.size != 0)))
 
-            # Open long position, check stops
+            # Check stops on open long pos
             if long_pos.size != 0:
-                if long_bars.close[0] < self.stop_loss[long_sym] or \
-                   bars.close[0] < self.psar[sym][0]:
-                    reason = 'stop loss' if long_bars.close[0] < self.stop_loss[long_sym] \
-                        else 'trailing stop'
-                    self.sell(data=long_sym, exectype=bt.Order.Close)
-                    self.stop_loss[long_sym] = None
-
-                    print('%s: %s SELL reason %s' %
-                          (self.datetime.datetime().isoformat(), long_sym,
-                           reason))
-            # Open short position, check stops
+                self.exit_position(True, [sym, bars], [long_sym, long_bars])
+            # Check stops on open short pos
             elif short_pos.size != 0:
-                if short_bars.close[0] < self.stop_loss[short_sym] or \
-                   bars.close[0] > self.psar[sym][0]:
-                    reason = 'stop loss' if short_bars.close[0] < self.stop_loss[short_sym] \
-                        else 'trailing stop'
-                    self.sell(data=short_sym, exectype=bt.Order.Close)
-                    self.stop_loss[short_sym] = None
-
-                    print('%s: %s SELL reason %s' %
-                          (self.datetime.datetime().isoformat(), short_sym,
-                           reason))
+                self.exit_position(False, [sym, bars], [short_sym, short_bars])
             # Check for entry
             else:
-                long = self.short_ppo[sym][0] > 0.0 and \
+                long = self.long_ppo[sym][0] > 0.0 and \
+                    self.short_ppo[sym][0] > 0.0 and \
                     self.short_ppo[sym][0] > self.low_ppo[sym][0] and \
                     self.aroon[sym][0] > 0.0
 
-                short = self.short_ppo[sym][0] < 0.0 and \
+                short = self.long_ppo[sym][0] < 0.0 and \
+                    self.short_ppo[sym][0] < 0.0 and \
                     self.short_ppo[sym][0] < self.high_ppo[sym][0] and \
                     self.aroon[sym][0] < 0.0 and \
                     not self.long_only
 
                 # Open long
                 if long and self.psar[sym][0] < bars.close[0]:
-                    # Percent risk for proxy symbol
-                    risk = (bars.close[0] - self.psar[sym][0]) / bars.close[0]
-
-                    # Normalize risk to long symbol, with leverage factor
-                    self.stop_loss[long_sym] = long_bars.close[0] - \
-                        (long_bars.close[0] * risk *
-                         self.get_proxy_leverage(long_proxy))
-
-                    qty = min((self.risk * self.get_portfolio_value()) /
-                              (long_bars.close[0] - self.stop_loss[long_sym]),
-                              (self.get_portfolio_value() / len(self.proxies)) /
-                              long_bars.close[0])
-                    self.buy(data=long_sym, size=qty, exectype=bt.Order.Close)
-
-                    print('%s: %s BUY qty %d stop %f' %
-                          (self.datetime.datetime().isoformat(), long_sym, qty,
-                           self.stop_loss[long_sym]))
+                    self.enter_position(True, [sym, bars],
+                                        [long_sym, long_bars])
                 # Open short
                 elif short and self.psar[sym][0] > bars.close[0]:
-                    risk = (self.psar[sym][0] - bars.close[0]) / bars.close[0]
+                    self.enter_position(False, [sym, bars],
+                                        [short_sym, short_bars])
 
-                    # Normalize risk to short symbol, with leverage factor
-                    self.stop_loss[short_sym] = short_bars.close[0] - \
-                        (short_bars.close[0] * risk *
-                         self.get_proxy_leverage(short_proxy))
-
-                    qty = min((self.risk * self.get_portfolio_value()) /
-                              (short_bars.close[0] - self.stop_loss[short_sym]),
-                              (self.get_portfolio_value() / len(self.proxies)) /
-                              short_bars.close[0])
-                    self.buy(data=short_sym, size=qty, exectype=bt.Order.Close)
-
-                    print('%s: %s BUY qty %d stop %f' %
-                          (self.datetime.datetime().isoformat(), short_sym, qty,
-                           self.stop_loss[short_sym]))
 
 
 
