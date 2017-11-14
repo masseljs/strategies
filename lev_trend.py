@@ -16,9 +16,8 @@ class LevTrend(bt.Strategy):
         ('risk', 0.02),
     )
 
-    def __init__(self, long_only, stop_type):
+    def __init__(self, long_only):
         self.long_only = long_only
-        self.stop_type = stop_type
         self.long_atr_multiplier = self.params.long_atr_mult
         self.short_atr_multiplier = self.params.short_atr_mult
         self.risk = self.params.risk
@@ -26,24 +25,34 @@ class LevTrend(bt.Strategy):
         self.short_ppo = dict()
         self.low_ppo = dict()
         self.high_ppo = dict()
+        self.up_day = dict()
+        self.up_week = dict()
+        self.down_day = dict()
+        self.down_week = dict()
         self.long_psar = dict()
         self.short_psar = dict()
         self.atr = dict()
         self.lowest = dict()
         self.highest = dict()
         self.stop_loss = dict()
-        self.trailing_stop = dict()
+        self.psar_stop = dict()
+        self.chand_stop = dict()
         self.proxies = {
             'SPY': {
-                'long': ['ULPIX'],
+                'long': ['SSO'],
                 'short': ['SDS'],
             },
+            #'QQQ': {
+            #    'long': ['UOPIX'],
+            #    'short': ['QID'],
+            #},
         }
 
         self._addsizer(bt.sizers.PercentSizer, percents=100)
         for sym in self.getdatanames():
             self.stop_loss[sym] = None
-            self.trailing_stop[sym] = None
+            self.psar_stop[sym] = None
+            self.chand_stop[sym] = None
 
             self.long_ppo[sym] = bt.indicators.PPO(
                 self.getdatabyname(sym), period1=self.params.short,
@@ -55,6 +64,14 @@ class LevTrend(bt.Strategy):
                 self.short_ppo[sym], period=5)
             self.high_ppo[sym] = bt.indicators.Highest(
                 self.short_ppo[sym], period=5)
+            self.up_day[sym] = bt.indicators.UpDayBool(
+                self.short_ppo[sym], period=1)
+            self.up_week[sym] = bt.indicators.AllN(
+                self.up_day[sym], period=3)
+            self.down_day[sym] = bt.indicators.DownDayBool(
+                self.short_ppo[sym], period=1)
+            self.down_week[sym] = bt.indicators.AllN(
+                self.down_day[sym], period=3)
             self.long_psar[sym] = bt.indicators.PSAR(
                 self.getdatabyname(sym), af=self.params.long_psar)
             self.short_psar[sym] = bt.indicators.PSAR(
@@ -85,72 +102,74 @@ class LevTrend(bt.Strategy):
 
     def set_trailing_stop(self, long, proxy, sym):
         if long:
-            # PSAR exit
-            if self.stop_type == 'psar':
-                self.trailing_stop[sym[0]] = self.long_psar[proxy[0]][0]
-            # Chandelier exit
-            else:
-                chandelier = self.highest[proxy[0]][0] - \
-                    (self.atr[proxy[0]][0] * self.long_atr_multiplier)
-                self.trailing_stop[sym[0]] = max(
-                    0 if self.trailing_stop[sym[0]] is None
-                    else self.trailing_stop[sym[0]], chandelier)
+            self.psar_stop[sym[0]] = self.long_psar[proxy[0]][0]
+            self.chand_stop[sym[0]] = self.highest[proxy[0]][0] - \
+                (self.atr[proxy[0]][0] * self.long_atr_multiplier)
         else:
-            # PSAR exit
-            if self.stop_type == 'psar':
-                self.trailing_stop[sym[0]] = self.short_psar[proxy[0]][0]
-            # Chandelier exit
-            else:
-                chandelier = self.lowest[proxy[0]][0] + \
-                    (self.atr[proxy[0]][0] * self.short_atr_multiplier)
-                self.trailing_stop[sym[0]] = min(
-                    sys.maxsize if self.trailing_stop[sym[0]] is None
-                    else self.trailing_stop[sym[0]], chandelier)
+            self.psar_stop[sym[0]] = self.short_psar[proxy[0]][0]
+            self.chand_stop[sym[0]] = self.lowest[proxy[0]][0] + \
+                (self.atr[proxy[0]][0] * self.short_atr_multiplier)
 
     def enter_position(self, long, proxy, sym):
         self.set_trailing_stop(long, proxy, sym)
 
-        # Make sure trailing stop is on right side of trade
-        buy = (long and proxy[1].close[0] > self.trailing_stop[sym[0]]) or \
-              (not long and proxy[1].close[0] < self.trailing_stop[sym[0]])
+        # Make sure at least 1 stop is on right side of trade
+        min_stop = min(self.psar_stop[sym[0]], self.chand_stop[sym[0]])
+        max_stop = max(self.psar_stop[sym[0]], self.chand_stop[sym[0]])
+        buy = (long and proxy[1].close[0] > min_stop) or \
+              (not long and proxy[1].close[0] < max_stop)
 
         if buy:
             # Calc risk per share based on proxy
             if long:
-                risk = (proxy[1].close[0] - self.trailing_stop[sym[0]]) / \
+                risk = (proxy[1].close[0] - min_stop) / \
                     proxy[1].close[0]
             else:
-                risk = (self.trailing_stop[sym[0]] - proxy[1].close[0]) / \
+                risk = (max_stop - proxy[1].close[0]) / \
                     proxy[1].close[0]
 
             # Normalize risk to symbol being traded to set stop loss
             self.stop_loss[sym[0]] = sym[1].close[0] - \
-                (sym[1].close[0] * risk)
+                (sym[1].close[0] * (risk + 0.01))
 
             cash_risk = self.risk * len(self.proxies) * self.get_cash_per_bucket()
             qty = min(cash_risk / (sym[1].close[0] - self.stop_loss[sym[0]]),
-                      self.get_cash_per_bucket() / sym[1].close[0])
+                      self.get_cash_per_bucket() * 0.95 / sym[1].close[0])
             self.buy(data=sym[0], size=qty, exectype=bt.Order.Close)
 
             print('%s: %s BUY qty %d stop %f' %
                   (self.datetime.datetime().isoformat(), sym[0], qty,
                    self.stop_loss[sym[0]]))
         else:
-            self.trailing_stop[sym[0]] = None
+            self.psar_stop[sym[0]] = None
+            self.chand_stop[sym[0]] = None
 
     def exit_position(self, long, proxy, sym):
+        # Save off current before resetting
+        psar = self.psar_stop[sym[0]]
+        chand = self.chand_stop[sym[0]]
+
+        # Reset stops
         self.set_trailing_stop(long, proxy, sym)
 
-        # Did close cross the trailing stop
-        sell = (long and proxy[1].close[0] < self.trailing_stop[sym[0]]) or \
-               (not long and proxy[1].close[0] > self.trailing_stop[sym[0]])
+        # Check if close crossed either of the trailing stops
+        if long:
+            sell = (proxy[1].close[-1] > psar and
+                    proxy[1].close[0] < self.psar_stop[sym[0]]) or \
+                   (proxy[1].close[-1] > chand and
+                    proxy[1].close[0] < self.chand_stop[sym[0]])
+        else:
+            sell = (proxy[1].close[-1] < psar and
+                    proxy[1].close[0] > self.psar_stop[sym[0]]) or \
+                   (proxy[1].close[-1] < chand and
+                    proxy[1].close[0] > self.chand_stop[sym[0]])
 
         if sym[1].close[0] < self.stop_loss[sym[0]] or sell:
             reason = 'stop loss' if sym[1].close[0] < self.stop_loss[sym[0]] \
                 else 'trailing stop'
             self.sell(data=sym[0], exectype=bt.Order.Close)
-            self.stop_loss[sym[0]] = None
-            self.trailing_stop[sym[0]] = None
+            self.psar_stop[sym[0]] = None
+            self.chand_stop[sym[0]] = None
 
             print('%s: %s SELL reason %s' %
                   (self.datetime.datetime().isoformat(), sym[0],
@@ -177,6 +196,7 @@ class LevTrend(bt.Strategy):
 
             print('%s: cash %f\n'
                   '\t%s { close %f trend ppo %f timing ppo %f '
+                  'up %s '
                   'long sar %f short sar %f '
                   'atr %f lowest %f highest %f '
                   'high ppo %f low ppo %f '
@@ -189,6 +209,7 @@ class LevTrend(bt.Strategy):
                    bars.close[0],
                    self.long_ppo[sym][0],
                    self.short_ppo[sym][0],
+                   str(self.up_week[sym][0]),
                    self.long_psar[sym][0],
                    self.short_psar[sym][0],
                    self.atr[sym][0],
@@ -213,12 +234,14 @@ class LevTrend(bt.Strategy):
             else:
                 long = self.long_ppo[sym][0] > 0.0 and \
                     self.short_ppo[sym][0] > 0.0 and \
-                    (self.short_ppo[sym][-1] < 0.0)
+                    (self.short_ppo[sym][-1] < 0.0 or
+                     (self.low_ppo[sym][0] < 0.5 and self.up_week[sym][0]))
 
                 short = not self.long_only and \
                     self.long_ppo[sym][0] < 0.0 and \
                     self.short_ppo[sym][0] < 0.0 and \
-                    (self.short_ppo[sym][-1] > 0.0)
+                    (self.short_ppo[sym][-1] > 0.0 or
+                     (self.high_ppo[sym][0] > -0.5 and self.down_week[sym][0]))
 
                 # Long signal
                 if long:
