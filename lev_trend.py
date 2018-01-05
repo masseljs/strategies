@@ -1,5 +1,4 @@
 import backtrader as bt
-import sys
 
 
 class LevTrend(bt.Strategy):
@@ -13,7 +12,7 @@ class LevTrend(bt.Strategy):
         ('atr', 22),
         ('long_atr_mult', 4.0),
         ('short_atr_mult', 3.0),
-        ('risk', 0.02),
+        ('risk', 0.04),
     )
 
     def __init__(self, long_only):
@@ -26,9 +25,9 @@ class LevTrend(bt.Strategy):
         self.low_ppo = dict()
         self.high_ppo = dict()
         self.up_day = dict()
-        self.up_week = dict()
+        self.up_days = dict()
         self.down_day = dict()
-        self.down_week = dict()
+        self.down_days = dict()
         self.long_psar = dict()
         self.short_psar = dict()
         self.atr = dict()
@@ -38,15 +37,13 @@ class LevTrend(bt.Strategy):
         self.psar_stop = dict()
         self.chand_stop = dict()
         self.proxies = {
-            'SPY': {
-                'long': ['SSO'],
-                'short': ['SDS'],
-            },
-            #'QQQ': {
-            #    'long': ['UOPIX'],
-            #    'short': ['QID'],
-            #},
+            'SPY': [('SSO', 'SDS')],
+            'QQQ': [('QLD', 'QID')],
+            'IWM': [('UWM', 'TWM')],
+            'DIA': [('DDM', 'DXD')],
+            #'EFA': [('EFO', 'EFU')]
         }
+        self.buckets = sum([len(i) for i in self.proxies.values()])
 
         self._addsizer(bt.sizers.PercentSizer, percents=100)
         for sym in self.getdatanames():
@@ -66,11 +63,11 @@ class LevTrend(bt.Strategy):
                 self.short_ppo[sym], period=5)
             self.up_day[sym] = bt.indicators.UpDayBool(
                 self.short_ppo[sym], period=1)
-            self.up_week[sym] = bt.indicators.AllN(
+            self.up_days[sym] = bt.indicators.AllN(
                 self.up_day[sym], period=3)
             self.down_day[sym] = bt.indicators.DownDayBool(
                 self.short_ppo[sym], period=1)
-            self.down_week[sym] = bt.indicators.AllN(
+            self.down_days[sym] = bt.indicators.AllN(
                 self.down_day[sym], period=3)
             self.long_psar[sym] = bt.indicators.PSAR(
                 self.getdatabyname(sym), af=self.params.long_psar)
@@ -85,7 +82,8 @@ class LevTrend(bt.Strategy):
 
     def notify_order(self, order):
         if order.status in [bt.Order.Completed]:
-            print('Executed %f' % order.executed.price)
+            print('Executed %d at %f' %
+                  (order.executed.size, order.executed.price))
 
     def get_cash_per_bucket(self):
         open_pos = 0
@@ -94,11 +92,7 @@ class LevTrend(bt.Strategy):
             pos = self.broker.getposition(data)
             open_pos += 1 if pos.size != 0 else 0
 
-        return self.broker.getcash() / (len(self.proxies) - open_pos)
-
-    @staticmethod
-    def get_proxy_sym(proxy):
-        return proxy[0]
+        return self.broker.getcash() / (self.buckets - open_pos)
 
     def set_trailing_stop(self, long, proxy, sym):
         if long:
@@ -120,7 +114,7 @@ class LevTrend(bt.Strategy):
               (not long and proxy[1].close[0] < max_stop)
 
         if buy:
-            # Calc risk per share based on proxy
+            # Calc pct risk
             if long:
                 risk = (proxy[1].close[0] - min_stop) / \
                     proxy[1].close[0]
@@ -128,11 +122,13 @@ class LevTrend(bt.Strategy):
                 risk = (max_stop - proxy[1].close[0]) / \
                     proxy[1].close[0]
 
+            # Set stop loss based on SAR/Chandelier in symbol?
+
             # Normalize risk to symbol being traded to set stop loss
             self.stop_loss[sym[0]] = sym[1].close[0] - \
-                (sym[1].close[0] * (risk + 0.01))
+                (sym[1].close[0] * (risk + 0.02))
 
-            cash_risk = self.risk * len(self.proxies) * self.get_cash_per_bucket()
+            cash_risk = self.risk * self.buckets * self.get_cash_per_bucket()
             qty = min(cash_risk / (sym[1].close[0] - self.stop_loss[sym[0]]),
                       self.get_cash_per_bucket() * 0.95 / sym[1].close[0])
             self.buy(data=sym[0], size=qty, exectype=bt.Order.Close)
@@ -181,76 +177,69 @@ class LevTrend(bt.Strategy):
                 continue
 
             bars = self.getdatabyname(sym)
-
-            proxy = self.proxies.get(sym)
-            long_proxy = proxy['long']
-            long_sym = self.get_proxy_sym(long_proxy)
-            long_bars = self.getdatabyname(long_sym)
-            short_proxy = proxy['short']
-            short_sym = self.get_proxy_sym(short_proxy)
-            short_bars = self.getdatabyname(short_sym)
-
-            # Check for open long/short pos
-            long_pos = self.broker.getposition(long_bars)
-            short_pos = self.broker.getposition(short_bars)
+            proxies = self.proxies.get(sym)
 
             print('%s: cash %f\n'
                   '\t%s { close %f trend ppo %f timing ppo %f '
-                  'up %s '
                   'long sar %f short sar %f '
                   'atr %f lowest %f highest %f '
-                  'high ppo %f low ppo %f '
-                  'long %s short %s }\n'
-                  '\t%s { close %f }\n' 
-                  '\t%s { close %f }\n' %
+                  'high ppo %f low ppo %f ' %
                   (bars.datetime.datetime().isoformat(),
                    self.broker.getcash(),
                    sym,
                    bars.close[0],
                    self.long_ppo[sym][0],
                    self.short_ppo[sym][0],
-                   str(self.up_week[sym][0]),
                    self.long_psar[sym][0],
                    self.short_psar[sym][0],
                    self.atr[sym][0],
                    self.lowest[sym][0],
                    self.highest[sym][0],
                    self.high_ppo[sym][0],
-                   self.low_ppo[sym][0],
-                   str(long_pos.size != 0),
-                   str(short_pos.size != 0),
-                   long_sym,
-                   long_bars.close[0],
-                   short_sym,
-                   short_bars.close[0]))
+                   self.low_ppo[sym][0]))
 
-            # Check stops on open long pos
-            if long_pos.size != 0:
-                self.exit_position(True, [sym, bars], [long_sym, long_bars])
-            # Check stops on open short pos
-            elif short_pos.size != 0:
-                self.exit_position(False, [sym, bars], [short_sym, short_bars])
-            # Check for entry
-            else:
-                long = self.long_ppo[sym][0] > 0.0 and \
-                    self.short_ppo[sym][0] > 0.0 and \
-                    (self.short_ppo[sym][-1] < 0.0 or
-                     (self.low_ppo[sym][0] < 0.5 and self.up_week[sym][0]))
+            for (long_sym, short_sym) in proxies:
+                long_bars = self.getdatabyname(long_sym)
+                short_bars = self.getdatabyname(short_sym)
 
-                short = not self.long_only and \
-                    self.long_ppo[sym][0] < 0.0 and \
-                    self.short_ppo[sym][0] < 0.0 and \
-                    (self.short_ppo[sym][-1] > 0.0 or
-                     (self.high_ppo[sym][0] > -0.5 and self.down_week[sym][0]))
+                print('\t%s { close %f }\n'
+                      '\t%s { close %f }' %
+                      (long_sym, long_bars.close[0],
+                       short_sym, short_bars.close[0]))
 
-                # Long signal
-                if long:
-                    self.enter_position(True, [sym, bars],
-                                        [long_sym, long_bars])
-                # Short signal
-                elif short:
-                    self.enter_position(False, [sym, bars],
-                                        [short_sym, short_bars])
+                # Check for open long/short pos
+                long_pos = self.broker.getposition(long_bars)
+                short_pos = self.broker.getposition(short_bars)
+
+                # Check stops on open long pos
+                if long_pos.size != 0:
+                    self.exit_position(True, [sym, bars],
+                                       [long_sym, long_bars])
+                # Check stops on open short pos
+                elif short_pos.size != 0:
+                    self.exit_position(False, [sym, bars],
+                                       [short_sym, short_bars])
+                # Check for entry
+                else:
+                    long = self.long_ppo[sym][0] > 0.0 and \
+                        self.short_ppo[sym][0] > 0.0 and \
+                        (self.short_ppo[sym][-1] < 0.0 or
+                         (self.low_ppo[sym][0] < 1.0 and self.up_days[sym][0]))
+
+                    short = not self.long_only and \
+                        self.long_ppo[sym][0] < 0.0 and \
+                        self.short_ppo[sym][0] < 0.0 and \
+                        (self.short_ppo[sym][-1] > 0.0 or
+                         (self.high_ppo[sym][0] > -0.5 and self.down_days[sym][0]))
+
+                    # Long signal
+                    if long:
+                        self.enter_position(True, [sym, bars],
+                                            [long_sym, long_bars])
+                    # Short signal
+                    elif short:
+                        self.enter_position(False, [sym, bars],
+                                            [short_sym, short_bars])
 
 
 

@@ -19,14 +19,6 @@ class TAA(bt.Strategy):
             'EEM': 0.25,
             'AGG': 0.20,
         },
-        'spot': {
-            'SPY': 0.10,
-            'IWM': 0.10,
-            'VNQ': 0.15,
-            'EEM': 0.20,
-            'EFA': 0.20,
-            'IEF': 0.20,
-        }
     }
 
     def __init__(self, name):
@@ -50,21 +42,21 @@ class TAA(bt.Strategy):
             self.ema[d] = bt.indicators.EMA(
                 self.getdatabyname(d), period=self.params.ema)
 
-        # Rebalance last day of week on last full week of quarter
+        # Rebalance last day of week on 2nd last full week of quarter
         self.rebalance_dates = set()
         cal = mcal.get_calendar('NYSE')
-        end_of_week = None
-        days = cal.valid_days(oldest, datetime.now())
+        end_of_week = []
+        days = cal.valid_days(oldest, datetime(2050, 12, 31, 23, 59))
         for i in range(0, len(days) - 1):
             curr = days[i]
             next = days[i + 1]
             if curr.month % 3 != 0:
                 continue
             if curr.weekday() > next.weekday():
-                end_of_week = curr
+                end_of_week.append(curr)
             if curr.month != next.month:
-                self.rebalance_dates.add(end_of_week.date())
-                end_of_week = None
+                self.rebalance_dates.add(end_of_week[-2].date())
+                end_of_week.clear()
 
     def notify_order(self, order):
         if order.status in [bt.Order.Completed]:
@@ -122,7 +114,7 @@ class TAA(bt.Strategy):
             if d not in self.allocation:
                 continue
 
-            tmp = 'SPY' if d in ['SPY', 'IWM', 'VNQ'] else d
+            tmp = 'SPY' if d in ['SPY', 'IWM', 'VNQ', 'EEM'] else d
             signal = self.getdatabyname(tmp)
             bars = self.getdatabyname(d)
 
@@ -154,7 +146,7 @@ class TAA(bt.Strategy):
                 # Open position, check for sell or rebalance
                 else:
                     # Sell (never sell bond allocation)
-                    if not trend and d not in ["AGG", "IEF"]:
+                    if not trend and d not in ["AGG"]:
                         self.sell(data=d, exectype=bt.Order.Close)
                         print('%s: %s SELL qty %d' %
                               (self.datetime.datetime().isoformat(), d,
